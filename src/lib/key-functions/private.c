@@ -9,7 +9,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
-#include "../../lib-other/pjrc/usb_keyboard/usb_keyboard.h"
+#include "../../usb_keyboard_rawhid.h"
 #include "../../lib/usb/usage-page/keyboard.h"
 #include "../../keyboard/layout.h"
 #include "../../keyboard/matrix.h"

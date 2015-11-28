@@ -1,6 +1,10 @@
-/* USB Keyboard Example for Teensy USB Development Board
+/* Teensy RawHID example and
+ * USB Keyboard Example for Teensy USB Development Board merged.
  * http://www.pjrc.com/teensy/usb_keyboard.html
+ * http://www.pjrc.com/teensy/rawhid.html
  * Copyright (c) 2009 PJRC.COM, LLC
+ * 2015 Henri Tuhola adjusted this code to get a dual-driver for ergodox
+ * mechanical keyboard.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -9,8 +13,8 @@
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
  * 
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
+ * The above description, website URL and copyright notice and this permission
+ * notice shall be included in all copies or substantial portions of the Software.
  * 
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
@@ -22,10 +26,11 @@
  */
 
 // Version 1.0: Initial Release
+// Version 1.1: fixed bug in analog
 // Version 1.1: Add support for Teensy 2.0
 
 #define USB_SERIAL_PRIVATE_INCLUDE
-#include "usb_keyboard.h"
+#include "usb_keyboard_rawhid.h"
 
 /**************************************************************************
  *
@@ -33,11 +38,9 @@
  *
  **************************************************************************/
 
-// You can change these to give your code its own name.
 #define STR_MANUFACTURER	L"unspecified"  // TODO
-#define STR_PRODUCT		L"ErgoDox ergonomic keyboard"
-
-
+#define STR_PRODUCT		L"ErgoDox ergonomic keyboard with modified firmware"
+//
 // Mac OS-X and Linux automatically load the correct drivers.  On
 // Windows, even though the driver is supplied by Microsoft, an
 // INF file is needed to load the driver.  These numbers need to
@@ -57,6 +60,20 @@
 #define REPORT_ID_SYSTEM    2
 #define REPORT_ID_CONSUMER  3
 
+// TODO: What these values are?
+#define RAWHID_USAGE_PAGE	0xFFAB	// recommended: 0xFF00 to 0xFFFF
+#define RAWHID_USAGE		0x0200	// recommended: 0x0100 to 0xFFFF
+
+// These determine the bandwidth that will be allocated
+// for your communication.  You do not need to use it
+// all, but allocating more than necessary means reserved
+// bandwidth is no longer available to other USB devices.
+#define RAWHID_TX_SIZE		64	// transmit packet size
+#define RAWHID_TX_INTERVAL	2	// max # of ms between transmit packets
+#define RAWHID_RX_SIZE		64	// receive packet size
+#define RAWHID_RX_INTERVAL	8	// max # of ms between receive packets
+
+
 /**************************************************************************
  *
  *  Endpoint Buffer Configuration
@@ -74,10 +91,17 @@
 #define EXTRA_SIZE		8
 #define EXTRA_BUFFER		EP_DOUBLE_BUFFER
 
+#define RAWHID_INTERFACE	2
+#define RAWHID_TX_ENDPOINT	3
+#define RAWHID_RX_ENDPOINT	4
+#define RAWHID_TX_BUFFER	EP_DOUBLE_BUFFER
+#define RAWHID_RX_BUFFER	EP_DOUBLE_BUFFER
 
 static const uint8_t PROGMEM endpoint_config_table[] = {
 	1, EP_TYPE_INTERRUPT_IN,  EP_SIZE(KEYBOARD_SIZE) | KEYBOARD_BUFFER,
 	1, EP_TYPE_INTERRUPT_IN,  EP_SIZE(EXTRA_SIZE)    | EXTRA_BUFFER,    // 4
+	1, EP_TYPE_INTERRUPT_IN,  EP_SIZE(RAWHID_TX_SIZE) | RAWHID_TX_BUFFER,
+	1, EP_TYPE_INTERRUPT_OUT,  EP_SIZE(RAWHID_RX_SIZE) | RAWHID_RX_BUFFER,
 	0
 };
 
@@ -111,6 +135,7 @@ static const uint8_t PROGMEM device_descriptor[] = {
 	0,					// iSerialNumber
 	1					// bNumConfigurations
 };
+
 
 // Keyboard Protocol 1, HID 1.11 spec, Appendix B, page 59-60
 static const uint8_t PROGMEM keyboard_hid_report_desc[] = {
@@ -166,14 +191,33 @@ static const uint8_t PROGMEM extra_hid_report_desc[] = {
     0xc0,                          // END_COLLECTION
 };
 
-#define KEYBOARD_HID_DESC_NUM                0
-#define KEYBOARD_HID_DESC_OFFSET             (9+(9+9+7)*KEYBOARD_HID_DESC_NUM+9)
+static const uint8_t PROGMEM rawhid_hid_report_desc[] = {
+	0x06, LSB(RAWHID_USAGE_PAGE), MSB(RAWHID_USAGE_PAGE),
+	0x0A, LSB(RAWHID_USAGE), MSB(RAWHID_USAGE),
+	0xA1, 0x01,				// Collection 0x01
+	0x75, 0x08,				// report size = 8 bits
+	0x15, 0x00,				// logical minimum = 0
+	0x26, 0xFF, 0x00,			// logical maximum = 255
+	0x95, RAWHID_TX_SIZE,			// report count
+	0x09, 0x01,				// usage
+	0x81, 0x02,				// Input (array)
+	0x95, RAWHID_RX_SIZE,			// report count
+	0x09, 0x02,				// usage
+	0x91, 0x02,				// Output (array)
+	0xC0					// end collection
+};
 
-#   define EXTRA_HID_DESC_NUM           (KEYBOARD_HID_DESC_NUM + 1)
-#   define EXTRA_HID_DESC_OFFSET        (9+(9+9+7)*EXTRA_HID_DESC_NUM+9)
+#define KEYBOARD_HID_DESC_NUM           0
+#define KEYBOARD_HID_DESC_OFFSET        (9+(9+9+7)*KEYBOARD_HID_DESC_NUM+9)
 
-#define NUM_INTERFACES                  (EXTRA_HID_DESC_NUM + 1)
-#define CONFIG1_DESC_SIZE               (9+(9+9+7)*NUM_INTERFACES)
+#define EXTRA_HID_DESC_NUM              (KEYBOARD_HID_DESC_NUM + 1)
+#define EXTRA_HID_DESC_OFFSET           (9+(9+9+7)*EXTRA_HID_DESC_NUM+9)
+
+#define RAWHID_HID_DESC_NUM             (EXTRA_HID_DESC_NUM + 1)
+#define RAWHID_HID_DESC_OFFSET          (9+(9+9+7)*RAWHID_HID_DESC_NUM+9)
+
+#define NUM_INTERFACES                  (RAWHID_HID_DESC_NUM + 1)
+#define CONFIG1_DESC_SIZE               (9+(9+9+7)*NUM_INTERFACES+7)
 //#define KEYBOARD_HID_DESC_OFFSET (9+9)
 static const uint8_t PROGMEM config1_descriptor[CONFIG1_DESC_SIZE] = {
 	// configuration descriptor, USB spec 9.6.3, page 264-266, Table 9-10
@@ -196,8 +240,7 @@ static const uint8_t PROGMEM config1_descriptor[CONFIG1_DESC_SIZE] = {
 	0x01,					// bInterfaceSubClass (0x01 = Boot)
 	0x01,					// bInterfaceProtocol (0x01 = Keyboard)
 	0,					// iInterface
-
-		// HID descriptor, HID 1.11 spec, section 6.2.1
+	// HID descriptor, HID 1.11 spec, section 6.2.1
 	9,					// bLength
 	0x21,					// bDescriptorType
 	0x11, 0x01,				// bcdHID
@@ -240,6 +283,40 @@ static const uint8_t PROGMEM config1_descriptor[CONFIG1_DESC_SIZE] = {
 	0x03,					// bmAttributes (0x03=intr)
 	EXTRA_SIZE, 0,				// wMaxPacketSize
 	10,					// bInterval
+
+	// interface descriptor, USB spec 9.6.5, page 267-269, Table 9-12
+	9,					// bLength
+	4,					// bDescriptorType
+	RAWHID_INTERFACE,			// bInterfaceNumber
+	0,					// bAlternateSetting
+	2,					// bNumEndpoints
+	0x03,					// bInterfaceClass (0x03 = HID)
+	0x00,					// bInterfaceSubClass (0x01 = Boot)
+	0x00,					// bInterfaceProtocol (0x01 = Keyboard)
+	0,					// iInterface
+	// HID interface descriptor, HID 1.11 spec, section 6.2.1
+	9,					// bLength
+	0x21,					// bDescriptorType
+	0x11, 0x01,				// bcdHID
+	0,					// bCountryCode
+	1,					// bNumDescriptors
+	0x22,					// bDescriptorType
+	sizeof(rawhid_hid_report_desc),		// wDescriptorLength
+	0,
+	// endpoint descriptor, USB spec 9.6.6, page 269-271, Table 9-13
+	7,					// bLength
+	5,					// bDescriptorType
+	RAWHID_TX_ENDPOINT | 0x80,		// bEndpointAddress
+	0x03,					// bmAttributes (0x03=intr)
+	RAWHID_TX_SIZE, 0,			// wMaxPacketSize
+	RAWHID_TX_INTERVAL,			// bInterval
+	// endpoint descriptor, USB spec 9.6.6, page 269-271, Table 9-13
+	7,					// bLength
+	5,					// bDescriptorType
+	RAWHID_RX_ENDPOINT,			// bEndpointAddress
+	0x03,					// bmAttributes (0x03=intr)
+	RAWHID_RX_SIZE, 0,			// wMaxPacketSize
+	RAWHID_RX_INTERVAL			// bInterval
 };
 
 // If you're desperate for a little extra code memory, these strings
@@ -284,6 +361,9 @@ static struct descriptor_list_struct {
 	    // Extra HID Descriptor
 	{0x2100, EXTRA_INTERFACE, config1_descriptor+EXTRA_HID_DESC_OFFSET, 9},
 	{0x2200, EXTRA_INTERFACE, extra_hid_report_desc, sizeof(extra_hid_report_desc)},
+        // RAWHID HID Descriptors
+	{0x2100, RAWHID_INTERFACE, config1_descriptor+RAWHID_HID_DESC_OFFSET, 9},
+	{0x2200, RAWHID_INTERFACE, rawhid_hid_report_desc, sizeof(rawhid_hid_report_desc)},
         // STRING descriptors
 	{0x0300, 0x0000, (const uint8_t *)&string0, 4},
 	{0x0301, 0x0409, (const uint8_t *)&string1, sizeof(STR_MANUFACTURER)},
@@ -328,6 +408,10 @@ volatile uint8_t keyboard_leds=0;
 uint16_t consumer_key;
 uint16_t last_consumer_key;
 
+// these are a more reliable timeout than polling the
+// frame counter (UDFNUML)
+static volatile uint8_t rx_timeout_count=0;
+static volatile uint8_t tx_timeout_count=0;
 
 /**************************************************************************
  *
@@ -406,6 +490,446 @@ int8_t usb_keyboard_send(void)
 	return 0;
 }
 
+// receive a packet, with timeout
+int8_t usb_rawhid_recv(uint8_t *buffer, uint8_t timeout)
+{
+	uint8_t intr_state;
+
+	// if we're not online (enumerated and configured), error
+	if (!usb_configuration) return -1;
+	intr_state = SREG;
+	cli();
+	rx_timeout_count = timeout;
+	UENUM = RAWHID_RX_ENDPOINT;
+	// wait for data to be available in the FIFO
+	while (1) {
+		if (UEINTX & (1<<RWAL)) break;
+		SREG = intr_state;
+		if (rx_timeout_count == 0) return 0;
+		if (!usb_configuration) return -1;
+		intr_state = SREG;
+		cli();
+		UENUM = RAWHID_RX_ENDPOINT;
+	}
+	// read bytes from the FIFO
+	#if (RAWHID_RX_SIZE >= 64)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 63)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 62)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 61)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 60)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 59)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 58)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 57)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 56)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 55)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 54)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 53)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 52)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 51)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 50)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 49)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 48)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 47)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 46)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 45)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 44)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 43)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 42)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 41)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 40)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 39)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 38)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 37)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 36)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 35)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 34)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 33)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 32)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 31)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 30)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 29)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 28)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 27)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 26)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 25)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 24)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 23)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 22)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 21)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 20)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 19)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 18)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 17)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 16)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 15)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 14)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 13)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 12)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 11)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 10)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 9)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 8)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 7)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 6)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 5)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 4)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 3)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 2)
+	*buffer++ = UEDATX;
+	#endif
+	#if (RAWHID_RX_SIZE >= 1)
+	*buffer++ = UEDATX;
+	#endif
+	// release the buffer
+	UEINTX = 0x6B;
+	SREG = intr_state;
+	return RAWHID_RX_SIZE;
+}
+
+// send a packet, with timeout
+int8_t usb_rawhid_send(const uint8_t *buffer, uint8_t timeout)
+{
+	uint8_t intr_state;
+
+	// if we're not online (enumerated and configured), error
+	if (!usb_configuration) return -1;
+	intr_state = SREG;
+	cli();
+	tx_timeout_count = timeout;
+	UENUM = RAWHID_TX_ENDPOINT;
+	// wait for the FIFO to be ready to accept data
+	while (1) {
+		if (UEINTX & (1<<RWAL)) break;
+		SREG = intr_state;
+		if (tx_timeout_count == 0) return 0;
+		if (!usb_configuration) return -1;
+		intr_state = SREG;
+		cli();
+		UENUM = RAWHID_TX_ENDPOINT;
+	}
+	// write bytes from the FIFO
+	#if (RAWHID_TX_SIZE >= 64)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 63)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 62)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 61)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 60)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 59)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 58)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 57)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 56)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 55)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 54)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 53)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 52)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 51)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 50)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 49)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 48)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 47)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 46)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 45)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 44)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 43)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 42)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 41)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 40)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 39)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 38)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 37)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 36)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 35)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 34)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 33)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 32)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 31)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 30)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 29)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 28)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 27)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 26)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 25)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 24)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 23)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 22)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 21)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 20)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 19)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 18)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 17)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 16)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 15)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 14)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 13)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 12)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 11)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 10)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 9)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 8)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 7)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 6)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 5)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 4)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 3)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 2)
+	UEDATX = *buffer++;
+	#endif
+	#if (RAWHID_TX_SIZE >= 1)
+	UEDATX = *buffer++;
+	#endif
+	// transmit it now
+	UEINTX = 0x3A;
+	SREG = intr_state;
+	return RAWHID_TX_SIZE;
+}
+
 /**************************************************************************
  *
  *  Private Functions - not intended for general user consumption....
@@ -419,8 +943,7 @@ int8_t usb_keyboard_send(void)
 //
 ISR(USB_GEN_vect)
 {
-	uint8_t intbits, i;  // used to declare a variable `t` as well, but it
-			     //   wasn't used ::Ben Blazak, 2012::
+	uint8_t intbits, i, t;
 	static uint8_t div4=0;
 
         intbits = UDINT;
@@ -449,6 +972,10 @@ ISR(USB_GEN_vect)
 				}
 			}
 		}
+        t = rx_timeout_count;
+        if (t) rx_timeout_count = --t;
+        t = tx_timeout_count;
+        if (t) tx_timeout_count = --t;
 	}
 }
 
@@ -656,6 +1183,40 @@ ISR(USB_COM_vect)
 				}
 			}
 		}
+		if (wIndex == RAWHID_INTERFACE) {
+			if (bmRequestType == 0xA1 && bRequest == HID_GET_REPORT) {
+				len = RAWHID_TX_SIZE;
+				do {
+					// wait for host ready for IN packet
+					do {
+						i = UEINTX;
+					} while (!(i & ((1<<TXINI)|(1<<RXOUTI))));
+					if (i & (1<<RXOUTI)) return;	// abort
+					// send IN packet
+					n = len < ENDPOINT0_SIZE ? len : ENDPOINT0_SIZE;
+					for (i = n; i; i--) {
+						// just send zeros
+						UEDATX = 0;
+					}
+					len -= n;
+					usb_send_in();
+				} while (len || n == ENDPOINT0_SIZE);
+				return;
+			}
+			if (bmRequestType == 0x21 && bRequest == HID_SET_REPORT) {
+				len = RAWHID_RX_SIZE;
+				do {
+					n = len < ENDPOINT0_SIZE ? len : ENDPOINT0_SIZE;
+					usb_wait_receive_out();
+					// ignore incoming bytes
+					usb_ack_out();
+					len -= n;
+				} while (len);
+				usb_wait_in_ready();
+				usb_send_in();
+				return;
+			}
+		}
 	}
 	UECONX = (1<<STALLRQ) | (1<<EPEN);	// stall
 }
@@ -704,4 +1265,3 @@ int8_t usb_extra_consumer_send()
 	}
 	return result;
 }
-

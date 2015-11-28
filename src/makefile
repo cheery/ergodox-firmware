@@ -41,9 +41,10 @@ SRC += $(wildcard keyboard/$(KEYBOARD)/layout/$(LAYOUT)*.c)
 SRC += $(wildcard lib/*.c)
 SRC += $(wildcard lib/*/*.c)
 SRC += $(wildcard lib/*/*/*.c)
-SRC += $(wildcard lib-other/*.c)
-SRC += $(wildcard lib-other/*/*.c)
-SRC += $(wildcard lib-other/*/*/*.c)
+# Usb-keyboard was the only thing in there.
+# SRC += $(wildcard lib-other/*.c)
+# SRC += $(wildcard lib-other/*/*.c)
+# SRC += $(wildcard lib-other/*/*/*.c)
 
 OBJ = $(SRC:%.c=%.o)
 

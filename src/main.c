@@ -11,7 +11,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <util/delay.h>
-#include "./lib-other/pjrc/usb_keyboard/usb_keyboard.h"
+#include "usb_keyboard_rawhid.h"
+//#include "./lib-other/pjrc/usb_keyboard/usb_keyboard.h"
 #include "./lib/key-functions/public.h"
 #include "./keyboard/controller.h"
 #include "./keyboard/layout.h"
@@ -47,6 +48,8 @@ bool    main_arg_any_non_trans_key_pressed;
 bool    main_arg_trans_key_pressed;
 
 // ----------------------------------------------------------------------------
+uint8_t usb_rawhid_fill = 0;
+uint8_t usb_rawhid_buffer[64];
 
 /*
  * main()
@@ -106,6 +109,13 @@ int main(void) {
 					main_arg_layer_offset = 0;
 					main_exec_key();
 					main_kb_was_transparent[row][col] = main_arg_trans_key_pressed;
+
+                    usb_rawhid_buffer[usb_rawhid_fill++] = is_pressed ? 1 : 2;
+                    usb_rawhid_buffer[usb_rawhid_fill++] = col*KB_COLUMNS + row;
+                    if (usb_rawhid_fill >= 64) {
+                        usb_rawhid_send(usb_rawhid_buffer, 0);
+                        usb_rawhid_fill = 0;
+                    }
 				}
 			}
 		}
@@ -118,6 +128,14 @@ int main(void) {
 		// send the USB report (even if nothing's changed)
 		usb_keyboard_send();
 		usb_extra_consumer_send();
+       
+        // This addition sends rawhid packet if it is filled up.
+        if (usb_rawhid_fill > 0) {
+            while (usb_rawhid_fill < 64) usb_rawhid_buffer[usb_rawhid_fill++] = 0;
+            usb_rawhid_send(usb_rawhid_buffer, 0);
+            usb_rawhid_fill = 0;
+        }
+
 		_delay_ms(MAKEFILE_DEBOUNCE_TIME);
 
 		// update LEDs
