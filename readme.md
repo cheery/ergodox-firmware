@@ -16,17 +16,8 @@ for configuring layouts.
 ### Modifications made by Cheery
 
  * I adjusted the keyboard/ergodox/layout/qwerty-kinesis-mod.c to match better with svorak layout.
- * The keyboard identifies as a rawhid device and sends sequence of bytes through its channel.
-
-The rawhid protocol I added has the following syntax:
-
-    message -> 00          # no operation. Ends the 64-byte frame. 
-            |  01 byte     # key down
-            |  02 byte     # key up
-
-Why hack onto my keyboard in the first place? Well since it is using some keys as layering, that means games won't recognize them. Some of those keys are in very convenient places. Also, I suppose it'd be cool if we had keyboards that wouldn't need computer configuration to function like the user expects it to do.
-
-As a small note: To even think of changing a keyboard protocol felt insane and evil prior having a programmable keyboard.
+ * I added a rawhid protocol and then discarded it.
+ * I added a new modifier key and changed layouts.
 
 ### Notes
 A rewrite is currently underway (see the 'partial-rewrite' branch) and so this

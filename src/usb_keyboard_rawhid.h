@@ -14,8 +14,8 @@ extern volatile uint8_t keyboard_leds;
 
 extern uint16_t consumer_key;
 
-int8_t usb_rawhid_recv(uint8_t *buffer, uint8_t timeout);  // receive a packet, with timeout
-int8_t usb_rawhid_send(const uint8_t *buffer, uint8_t timeout); // send a packet, with timeout
+// int8_t usb_rawhid_recv(uint8_t *buffer, uint8_t timeout);  // receive a packet, with timeout
+// int8_t usb_rawhid_send(const uint8_t *buffer, uint8_t timeout); // send a packet, with timeout
 
 // This file does not include the HID debug functions, so these empty
 // macros replace them with nothing, so users can compile code that
