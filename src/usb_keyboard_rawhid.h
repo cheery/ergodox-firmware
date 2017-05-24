@@ -23,7 +23,7 @@ extern uint16_t consumer_key;
 #define usb_debug_putchar(c)
 #define usb_debug_flush_output()
 
-int8_t usb_extra_consumer_send();
+extern int8_t usb_extra_consumer_send();
 
 /* Consumer Page(0x0C)
  * following are supported by Windows: http://msdn.microsoft.com/en-us/windows/hardware/gg463372.aspx
