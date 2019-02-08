@@ -43,10 +43,10 @@
 //  3, 2, 1  C B A    (1=C, 2=S, 4=A, 8=G)
 const uint16_t PROGMEM custom_layout[KB_LAYERS][KB_ROWS][KB_COLUMNS] = {
     {{0x0029, 0x001E, 0x001F, 0x0020, 0x0021, 0x0022, 0x002E,      0x0000, 0x0023, 0x0024, 0x0025, 0x0026, 0x0027, 0x002D },
-     {0x002B, 0x0014, 0x001A, 0x0008, 0x0015, 0x0017, 0x0225,      0x002F, 0x001C, 0x0018, 0x000C, 0x0012, 0x0013, 0x0030 },
+     {0x002B, 0x0014, 0x001A, 0x0008, 0x0015, 0x0017, 0x0049,      0x002F, 0x001C, 0x0018, 0x000C, 0x0012, 0x0013, 0x0030 },
      {0x0031, 0x0004, 0x0016, 0x0007, 0x0009, 0x000A,      0,           0, 0x000B, 0x000D, 0x000E, 0x000F, 0x0033, 0x0034 },
      {  MLSH, 0x001D, 0x001B, 0x0006, 0x0019, 0x0005, 0x0000,      0x0000, 0x0011, 0x0010, 0x0036, 0x0037, 0x0038,   MRSH },
-     {  MLGU, 0x0065, 0x002E, 0x0035, 0x0064,      0,      0,           0,      0, 0x0050, 0x0051, 0x0052, 0x004F,   MRGU },
+     {  MLGU, 0x0048, 0x002E, 0x0035, 0x0064,      0,      0,           0,      0, 0x0050, 0x0051, 0x0052, 0x004F,   MRGU },
      {     0, 0x004D, 0x004C, 0x002A, 0x004A,   MLCT,   MLAL,        MRAL,   MRCT, 0x004B, 0x002C, 0x0028, 0x004E,      0 }},
 
     {{0x0029, 0x003A, 0x003B, 0x003C, 0x003D, 0x003E, 0x002E,      0x0000, 0x003F, 0x0040, 0x0041, 0x0042, 0x0043, 0x002D },
@@ -78,7 +78,6 @@ const uint16_t PROGMEM custom_layout[KB_LAYERS][KB_ROWS][KB_COLUMNS] = {
      {     0, 0x004D, 0x004C, 0x002A, 0x004A,   MLCT,   MLAL,        MRAL,   MRCT, 0x004B, 0x002C, 0x0028, 0x004E,      0 }}
 };
 
-
 // ----------------------------------------------------------------------------
 
 #define  MAX_ACTIVE_LAYERS  20
@@ -91,9 +90,14 @@ bool (*main_kb_is_pressed)[KB_ROWS][KB_COLUMNS] = &_main_kb_is_pressed;
 static bool _main_kb_was_pressed[KB_ROWS][KB_COLUMNS];
 bool (*main_kb_was_pressed)[KB_ROWS][KB_COLUMNS] = &_main_kb_was_pressed;
 
-// static bool main_kb_was_transparent[KB_ROWS][KB_COLUMNS];
+// Idea is that the same key is interpreted as the same from press down to up.
+uint8_t kb_history[KB_ROWS][KB_COLUMNS];
 
-uint8_t main_layers_pressed[KB_ROWS][KB_COLUMNS];
+// static bool main_kb_was_transparent[KB_ROWS][KB_COLUMNS];
+//
+//
+
+// uint8_t main_layers_pressed[KB_ROWS][KB_COLUMNS];
 
 uint8_t main_loop_row;
 uint8_t main_loop_col;
@@ -132,6 +136,8 @@ int main(void) {
 	kb_led_delay_usb_init();  // give the OS time to load drivers, etc.
 
 	kb_led_state_ready();
+
+    uint8_t key_row=0, key_col=0;
 
     main_l_mode = 0;
     main_r_mode = 0;
@@ -191,14 +197,18 @@ int main(void) {
                 //uint8_t mode = (col < KB_COLUMNS/2)?main_l_mode:main_r_mode;
 
 				if (is_pressed != was_pressed) {
-                    uint16_t kc = pgm_read_word(&custom_layout[mode][KB_ROWS - 1 - row][col]);
-                    uint8_t h = (kc >> 8);
-                    uint8_t c = (kc & 255);
 
 					if (is_pressed) {
+                        uint16_t kc = pgm_read_word(&custom_layout[mode][KB_ROWS - 1 - row][col]);
+                        uint8_t h = (kc >> 8);
+                        uint8_t c = (kc & 255);
+                        kb_history[row][col] = c;
+
                         if ((c & 0xE8) == 0xE0) {
                             main_direct_modifiers |= (1 << (c & 7));
                         } else {
+                            key_row = row;
+                            key_col = col;
                             main_key_modifiers = h;
                             // If they key was already pressed, "repeat" the keypress.
                             for (uint8_t i = 0; i < 6; i++) {
@@ -218,19 +228,20 @@ int main(void) {
                             }
                         }
                     } else {
+                        uint16_t c = kb_history[row][col];
+
                         if ((c & 0xE8) == 0xE0) {
                             main_direct_modifiers &= ~(1 << (c & 7));
                         } else {
-                            uint8_t clean = 1;
                             // The last pressed modifier is preserved
                             // If all keys are released, the modifier is released.
                             for (uint8_t i = 0; i < 6; i++) {
                                 if (keyboard_keys[i] == c) {
                                     keyboard_keys[i] = 0;
+                                    break;
                                 }
-                                clean &= (keyboard_keys[i] > 0); 
                             }
-                            if (clean) {
+                            if (key_row == row && key_col == col) {
                                 main_key_modifiers = 0;
                             }
                         }
